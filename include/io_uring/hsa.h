@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "io_uring/uring.h"
+
 namespace io_uring {
 namespace hsa {
 
@@ -31,10 +33,11 @@ inline void check_impl(const char *file, int32_t line, hsa_status_t code) {
   std::exit(EXIT_FAILURE);
 }
 template <typename T>
-inline void check_impl(const char *file, int32_t line,
-                       std::expected<T, hsa_status_t> code) {
-  if (code)
+inline T check_impl(const char *file, int32_t line,
+                    std::expected<T, hsa_status_t> code) {
+  if (!code)
     check_impl(file, line, code.error());
+  return code.value();
 }
 
 #define HSA_CHECK(x) ::io_uring::hsa::check_impl(__FILE__, __LINE__, (x))
@@ -111,6 +114,47 @@ hsa_status_t find_memory_pool(hsa_agent_t agent,
   };
   return iterate<hsa_amd_memory_pool_t>(hsa_amd_agent_iterate_memory_pools,
                                         agent, cb);
+}
+
+// Create an HSA interrupt signal and extract the doorbell fields needed
+// for GPU-to-host notification.
+struct SignalDoorbell {
+  hsa_signal_t signal;
+  Doorbell doorbell;
+};
+
+[[nodiscard]] inline std::expected<SignalDoorbell, hsa_status_t>
+create_doorbell(hsa_agent_t gpu_agent) {
+  hsa_signal_t signal;
+  if (hsa_status_t err = hsa_signal_create(0, 0, nullptr, &signal))
+    return std::unexpected(err);
+
+  // Peeking behind the curtains to grab the internal signal state so we do not
+  // need to define a full HSA signal on the device.
+  struct amd_signal_t {
+    int64_t kind;
+    int64_t value;
+    uint64_t event_mailbox_ptr;
+    uint32_t event_id;
+  };
+  auto *s = reinterpret_cast<amd_signal_t *>(signal.handle);
+
+  char name[64] = {};
+  if (hsa_status_t err =
+          hsa_agent_get_info(gpu_agent, HSA_AGENT_INFO_NAME, name))
+    return std::unexpected(err);
+  bool is_gfx10 = (name[3] == '1' && name[4] == '0');
+  uint32_t mask = is_gfx10 ? 0x7fffffu : 0xffffffu;
+
+  return SignalDoorbell{
+      .signal = signal,
+      .doorbell =
+          {
+              .value = reinterpret_cast<uint64_t *>(&s->value),
+              .mailbox = reinterpret_cast<uint64_t *>(s->event_mailbox_ptr),
+              .event_id = s->event_id & mask,
+          },
+  };
 }
 
 // Load a code object from a memory buffer and produce a validated, frozen

@@ -35,7 +35,10 @@ if(ENABLE_CLANG_TIDY)
   endif()
 endif()
 
-add_compile_options(
+find_package(hsa-runtime64 1.12.0 REQUIRED HINTS ${CMAKE_INSTALL_PREFIX}
+             PATHS /opt/rocm)
+
+set(common_compile_options
   -Wall
   -Wextra
   -Wpedantic
@@ -46,21 +49,18 @@ add_compile_options(
   -Wno-unused-parameter
 )
 
-find_package(hsa-runtime64 1.2.0 REQUIRED HINTS ${CMAKE_INSTALL_PREFIX}
-             PATHS /opt/rocm)
-message(STATUS "Found HSA runtime: ${hsa-runtime64_DIR}")
-
 add_subdirectory(device)
 
 add_executable(io_uring)
 target_include_directories(io_uring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(io_uring PRIVATE hsa-runtime64::hsa-runtime64)
+target_compile_options(io_uring PRIVATE ${common_compile_options})
 target_compile_definitions(io_uring PRIVATE
-  DEVICE_BINARY_PATH="$<TARGET_FILE:device>"
+  DEVICE_BINARY_PATH="$<TARGET_FILE:kernel>"
 )
-add_dependencies(io_uring device)
+add_dependencies(io_uring kernel)
 
 add_subdirectory(src)
 
 install(TARGETS io_uring DESTINATION bin)
-install(TARGETS device DESTINATION lib/io_uring)
+install(TARGETS kernel DESTINATION lib/io_uring)

@@ -1,14 +1,14 @@
-add_executable(device kernel.cpp)
+add_executable(kernel kernel.cpp)
 
-set_target_properties(device PROPERTIES OUTPUT_NAME device)
+target_include_directories(kernel PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
-target_compile_options(device PRIVATE
+target_compile_options(kernel PRIVATE
+  ${common_compile_options}
   --target=${IO_URING_GPU_TRIPLE}
   -mcpu=${IO_URING_GPU_ARCH}
-  -nogpulib
 )
 
-target_link_options(device PRIVATE
+target_link_options(kernel PRIVATE
   --target=${IO_URING_GPU_TRIPLE}
   -mcpu=${IO_URING_GPU_ARCH}
 )
