@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 namespace io_uring {
@@ -16,6 +17,11 @@ long sys_io_uring_enter(int fd, uint32_t to_submit, uint32_t min_complete,
                         uint32_t flags) {
   return syscall(__NR_io_uring_enter, fd, to_submit, min_complete, flags,
                  nullptr, 0);
+}
+
+long sys_io_uring_register(int fd, uint32_t opcode, const void *arg,
+                           uint32_t nr_args) {
+  return syscall(__NR_io_uring_register, fd, opcode, arg, nr_args);
 }
 
 } // namespace
@@ -52,6 +58,10 @@ std::expected<HostRing, int> init_ring(uint32_t entries, void *sqe_buf,
   ring.cq_mask = reinterpret_cast<uint32_t *>(ring_base + p.cq_off.ring_mask);
   ring.cqes = reinterpret_cast<cqe *>(ring_base + p.cq_off.cqes);
 
+  // Registered buffer pool, set by register_buffers().
+  ring.data_pool = nullptr;
+  ring.buf_stride = 0;
+
   // Bookkeeping for submissions, will need to be changed to MPSC / SPMC later.
   ring.sq_pending = 0;
 
@@ -73,6 +83,28 @@ long wakeup_ring(HostRing &hr) {
   if (flags & io_uring::SQ_NEED_WAKEUP)
     return sys_io_uring_enter(hr.fd, 0, 0, io_uring::ENTER_SQ_WAKEUP);
   return 0;
+}
+
+int register_buffers(HostRing &hr, void *pool, size_t buf_size,
+                     uint32_t count) {
+  auto *iovs = new struct iovec[count];
+  for (uint32_t i = 0; i < count; ++i) {
+    iovs[i].iov_base = static_cast<uint8_t *>(pool) + i * buf_size;
+    iovs[i].iov_len = buf_size;
+  }
+  long ret = sys_io_uring_register(hr.fd, REGISTER_BUFFERS, iovs, count);
+  delete[] iovs;
+  if (ret < 0)
+    return -errno;
+
+  hr.ring.data_pool = static_cast<uint8_t *>(pool);
+  hr.ring.buf_stride = static_cast<uint32_t>(buf_size);
+  return 0;
+}
+
+int unregister_buffers(HostRing &hr) {
+  long ret = sys_io_uring_register(hr.fd, UNREGISTER_BUFFERS, nullptr, 0);
+  return ret < 0 ? -errno : 0;
 }
 
 } // namespace io_uring

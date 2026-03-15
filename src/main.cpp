@@ -48,7 +48,15 @@ int main() {
   HSA_CHECK(hsa_amd_memory_pool_allocate(fg_pool, RING_SIZE, 0, &ring_buf));
   HSA_CHECK(hsa_amd_agents_allow_access(1, &gpu_agent, nullptr, ring_buf));
 
+  const size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+  void *data_pool = nullptr;
+  HSA_CHECK(hsa_amd_memory_pool_allocate(fg_pool, RING_ENTRIES * page_size, 0,
+                                         &data_pool));
+  HSA_CHECK(hsa_amd_agents_allow_access(1, &gpu_agent, nullptr, data_pool));
+
   auto hr = URING_CHECK(io_uring::init_ring(RING_ENTRIES, sqe_buf, ring_buf));
+  URING_CHECK(
+      io_uring::register_buffers(hr, data_pool, page_size, RING_ENTRIES));
 
   // Create an HSA interrupt signal for the GPU to wake the waker thread.
   auto [signal, doorbell] = HSA_CHECK(create_doorbell(gpu_agent));
@@ -92,7 +100,9 @@ int main() {
   waker.join();
 
   HSA_CHECK(hsa_signal_destroy(signal));
+  URING_CHECK(io_uring::unregister_buffers(hr));
   URING_CHECK(io_uring::destroy_ring(hr));
+  HSA_CHECK(hsa_amd_memory_pool_free(data_pool));
   HSA_CHECK(hsa_amd_memory_pool_free(ring_buf));
   HSA_CHECK(hsa_amd_memory_pool_free(sqe_buf));
   HSA_CHECK(hsa_queue_destroy(queue));

@@ -47,6 +47,15 @@ struct HostRing {
 init_ring(uint32_t entries, void *sqe_buf, void *ring_buf,
           uint32_t sq_thread_idle = 0);
 
+// Register a contiguous pool of data buffers for OP_READ_FIXED /
+// OP_WRITE_FIXED. The pool is split into |count| buffers of |buf_size| bytes
+// each (one per SQE slot). Sets Ring::data_pool and Ring::buf_stride.
+// The pool must remain valid (and GPU-accessible) until unregister_buffers().
+int register_buffers(HostRing &hr, void *pool, size_t buf_size, uint32_t count);
+
+// Unregister previously registered buffers.
+int unregister_buffers(HostRing &hr);
+
 // Close the io_uring file descriptor.
 int destroy_ring(HostRing &hr);
 

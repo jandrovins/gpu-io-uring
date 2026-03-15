@@ -1,6 +1,7 @@
 #ifndef IO_URING_URING_H
 #define IO_URING_URING_H
 
+#include "common.h"
 #include <stdint.h>
 
 namespace io_uring {
@@ -181,6 +182,9 @@ struct Ring {
   uint32_t *cq_mask;
   cqe *cqes;
 
+  uint8_t *data_pool;
+  uint32_t buf_stride;
+
   uint32_t sq_pending;
 };
 
@@ -237,6 +241,39 @@ inline void cq_advance(Ring &ring, uint32_t count = 1) {
                           __MEMORY_SCOPE_SYSTEM);
 }
 
+// Check if the SQPOLL thread has gone idle and needs a wakeup.
+inline bool needs_wakeup(Ring &ring) {
+  return __scoped_atomic_load_n(ring.sq_flags, __ATOMIC_RELAXED,
+                                __MEMORY_SCOPE_SYSTEM) &
+         SQ_NEED_WAKEUP;
+}
+
+// Submit an operation. |fn| is invoked as fn(sqe*, args...) to populate the
+// SQE. Tags the submission with a ticket derived from the SQE slot index and
+// stored in user_data. Returns the ticket for use with complete().
+template <typename Fn, typename... Args>
+uint64_t submit(Ring &ring, Fn &&fn, Args &&...args) {
+  sqe *s;
+  while (!(s = get_sqe(ring)))
+    ;
+  uint64_t ticket = static_cast<uint64_t>(s - ring.sqes);
+  io_uring::forward<Fn>(fn)(s, io_uring::forward<Args>(args)...);
+  s->user_data = ticket;
+  sq_flush(ring);
+  return ticket;
+}
+
+// Wait for the completion of a specific ticket. Returns the CQE result.
+inline int32_t complete(Ring &ring, uint64_t ticket) {
+  cqe *c;
+  do {
+    c = peek_cqe(ring);
+  } while (!c || c->user_data != ticket);
+  int32_t res = c->res;
+  cq_advance(ring);
+  return res;
+}
+
 // Prep helpers — zero the SQE and fill fields for common operations.
 inline void prep_nop(sqe *s) {
   *s = {};
@@ -263,6 +300,11 @@ inline void prep_read(sqe *s, int fd, void *buf, uint32_t len,
   s->off = offset;
 }
 
+inline uint8_t *get_buf(sqe *s, Ring &ring) {
+  return ring.data_pool +
+         static_cast<uint32_t>(s - ring.sqes) * ring.buf_stride;
+}
+
 inline void prep_write_fixed(sqe *s, int fd, const void *buf, uint32_t len,
                              uint16_t buf_idx, uint64_t offset = 0) {
   *s = {};
@@ -274,6 +316,15 @@ inline void prep_write_fixed(sqe *s, int fd, const void *buf, uint32_t len,
   s->buf_index = buf_idx;
 }
 
+inline void prep_write_fixed(sqe *s, Ring &ring, int fd, const void *msg,
+                             uint32_t len, uint64_t offset = 0) {
+  uint8_t *buf = io_uring::get_buf(s, ring);
+  __builtin_memcpy(buf, msg, io_uring::min(len, ring.buf_stride));
+
+  prep_write_fixed(s, fd, buf, len, static_cast<uint16_t>(s - ring.sqes),
+                   offset);
+}
+
 inline void prep_read_fixed(sqe *s, int fd, void *buf, uint32_t len,
                             uint16_t buf_idx, uint64_t offset = 0) {
   *s = {};
@@ -283,6 +334,14 @@ inline void prep_read_fixed(sqe *s, int fd, void *buf, uint32_t len,
   s->len = len;
   s->off = offset;
   s->buf_index = buf_idx;
+}
+
+inline void prep_read_fixed(sqe *s, Ring &ring, int fd, void *msg, uint32_t len,
+                            uint64_t offset = 0) {
+  uint8_t *buf = io_uring::get_buf(s, ring);
+  prep_read_fixed(s, fd, buf, len, static_cast<uint16_t>(s - ring.sqes),
+                  offset);
+  __builtin_memcpy(msg, buf, io_uring::min(len, ring.buf_stride));
 }
 
 } // namespace io_uring
