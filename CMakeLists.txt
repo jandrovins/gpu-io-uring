@@ -35,6 +35,7 @@ if(ENABLE_CLANG_TIDY)
   endif()
 endif()
 
+find_package(Threads REQUIRED)
 find_package(hsa-runtime64 1.12.0 REQUIRED HINTS ${CMAKE_INSTALL_PREFIX}
              PATHS /opt/rocm)
 
@@ -53,7 +54,7 @@ add_subdirectory(device)
 
 add_executable(io_uring)
 target_include_directories(io_uring PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(io_uring PRIVATE hsa-runtime64::hsa-runtime64)
+target_link_libraries(io_uring PRIVATE hsa-runtime64::hsa-runtime64 Threads::Threads)
 target_compile_options(io_uring PRIVATE ${common_compile_options})
 target_compile_definitions(io_uring PRIVATE
   DEVICE_BINARY_PATH="$<TARGET_FILE:kernel>"
